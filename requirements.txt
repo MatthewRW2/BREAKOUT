@@ -1,0 +1,4 @@
+# Breakout — Panda3D Python clone
+# Install with:  pip install -r requirements.txt
+
+Panda3D>=1.10.13

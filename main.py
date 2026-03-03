@@ -2,24 +2,23 @@
 # -*- coding: utf-8 -*-
 """
 ╔══════════════════════════════════════════════════════════════╗
-║              BREAKOUT — Panda3D Single-File Clone            ║
+║        BREAKOUT — Panda3D · Power Bricks Edition             ║
 ║   Controls: A/D or Arrows · SPACE launch · ESC pause · Q quit║
 ╚══════════════════════════════════════════════════════════════╝
 """
 from __future__ import annotations
 import json
 import math
-import os
 import sys
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 # ── Panda3D bootstrap (before ShowBase import) ─────────────────
 from panda3d.core import loadPrcFileData  # noqa: E402
 
-loadPrcFileData("", "window-title BREAKOUT")
+loadPrcFileData("", "window-title BREAKOUT — Power Edition")
 loadPrcFileData("", "win-size 800 600")
 loadPrcFileData("", "sync-video 0")
-loadPrcFileData("", "audio-library-name null")   # skip audio init warnings
+loadPrcFileData("", "audio-library-name null")
 
 from direct.gui.DirectGui import DirectButton  # noqa: E402
 from direct.gui.OnscreenText import OnscreenText  # noqa: E402
@@ -41,12 +40,11 @@ WIN_W: int = 800
 WIN_H: int = 600
 
 # Field boundaries in Panda3D aspect2d world-units.
-# aspect2d: x ∈ [-4/3, 4/3], y ∈ [-1, 1] for an 800×600 window.
-F_LEFT:   float = -0.90    # left wall inner edge (game units)
-F_RIGHT:  float =  0.90    # right wall inner edge
-F_TOP:    float =  0.93    # top wall inner edge
-F_BOTTOM: float = -0.98    # y below this → ball lost
-WALL_T:   float =  0.025   # wall half-thickness (visual only)
+F_LEFT:   float = -0.90
+F_RIGHT:  float =  0.90
+F_TOP:    float =  0.93
+F_BOTTOM: float = -0.98
+WALL_T:   float =  0.025
 
 # Effective bounce boundaries for the ball centre
 B_LEFT:  float = F_LEFT  + WALL_T * 2
@@ -54,44 +52,60 @@ B_RIGHT: float = F_RIGHT - WALL_T * 2
 B_TOP:   float = F_TOP   - WALL_T * 2
 
 # ── Paddle ──────────────────────────────────────────────────────
-PAD_W:     float = 0.28     # paddle full width
-PAD_H:     float = 0.046    # paddle full height
-PAD_Y:     float = -0.83    # paddle vertical centre (fixed)
-PAD_SPEED: float = 1.90     # horizontal speed (units/s)
+PAD_W:     float = 0.28
+PAD_H:     float = 0.046
+PAD_Y:     float = -0.83
+PAD_SPEED: float = 1.90
 PAD_MIN_X: float = B_LEFT  + PAD_W / 2
 PAD_MAX_X: float = B_RIGHT - PAD_W / 2
 
 # ── Ball ────────────────────────────────────────────────────────
-BALL_R:       float = 0.028  # ball "radius" (half-side of square visual)
-BALL_SPD0:    float = 0.90   # initial speed (units/s)
-BALL_SPD_MAX: float = 2.20   # maximum speed
-BALL_ACCEL:   float = 0.022  # speed gain per brick destroyed
-MIN_VY:       float = 0.28   # minimum |vy| to avoid near-horizontal flight
-DT_CAP:       float = 0.05   # dt cap (30 fps minimum) — prevents tunnelling
-SUBSTEPS:     int   = 4      # physics sub-steps per visual frame
+BALL_R:       float = 0.028
+BALL_SPD0:    float = 0.90
+BALL_SPD_MAX: float = 2.20
+BALL_ACCEL:   float = 0.022
+MIN_VY:       float = 0.28
+DT_CAP:       float = 0.05
+SUBSTEPS:     int   = 4
 
 # ── Bricks ──────────────────────────────────────────────────────
-BRICK_W:    float = 0.162   # brick full width
-BRICK_H:    float = 0.062   # brick full height
-BRICK_PX:   float = 0.010   # horizontal gap between bricks
-BRICK_PY:   float = 0.009   # vertical gap between rows
-BRICK_COLS: int   = 10      # columns per row
-BRICK_Y0:   float = 0.73    # y centre of the topmost brick row
+BRICK_W:    float = 0.162
+BRICK_H:    float = 0.062
+BRICK_PX:   float = 0.010
+BRICK_PY:   float = 0.009
+BRICK_COLS: int   = 10
+BRICK_Y0:   float = 0.73
 
-# ── Game ────────────────────────────────────────────────────────
+# ── Scoring ─────────────────────────────────────────────────────
 LIVES0:    int = 3
-PTS_NORM:  int = 10    # points for a normal brick
-PTS_HARD1: int = 5     # points for first hit on a hard brick (not destroyed)
-PTS_HARD2: int = 25    # points for second hit on a hard brick (destroyed)
+PTS_NORM:  int = 10
+PTS_HARD1: int = 5
+PTS_HARD2: int = 25
+PTS_POWER: int = 20   # points for destroying a power brick
 SAVE_FILE: str = "save.json"
+
+# ── Power bricks ────────────────────────────────────────────────
+# Brick type IDs (used in LEVELS matrices)
+BTYPE_MULTI:  int   = 7    # cyan   – splits into 3 balls
+BTYPE_SLOW:   int   = 8    # purple – slows all balls temporarily
+BTYPE_FAST:   int   = 10   # orange – speeds all balls temporarily
+POWER_DUR:    float = 8.0  # seconds the slow/fast effect lasts
+SLOW_FACTOR:  float = 0.55 # speed multiplier when SLOW is active
+FAST_FACTOR:  float = 1.60 # speed multiplier when FAST is active
+MULTI_CAP:    int   = 8    # maximum simultaneous balls (safety cap)
+POWER_BTYPES        = {BTYPE_MULTI, BTYPE_SLOW, BTYPE_FAST}
 
 # ── Colours ─────────────────────────────────────────────────────
 C_BG     = LColor(0.04, 0.04, 0.12, 1)
 C_WALL   = LColor(0.26, 0.29, 0.44, 1)
 C_PADDLE = LColor(0.93, 0.93, 0.93, 1)
-C_BALL   = LColor(1.00, 0.97, 0.58, 1)
-C_HARD   = LColor(0.66, 0.68, 0.75, 1)     # hard brick (full)
-C_HARD2  = LColor(0.93, 0.56, 0.18, 1)     # hard brick (damaged)
+C_BALL   = LColor(1.00, 0.97, 0.58, 1)   # yellow – original ball
+C_BALL_X = LColor(0.72, 1.00, 0.72, 1)   # pale green – extra balls
+C_HARD   = LColor(0.66, 0.68, 0.75, 1)
+C_HARD2  = LColor(0.93, 0.56, 0.18, 1)
+C_MULTI  = LColor(0.10, 0.95, 0.95, 1)   # cyan   – multi-ball brick
+C_SLOW   = LColor(0.62, 0.12, 0.95, 1)   # purple – slow brick
+C_FAST   = LColor(1.00, 0.38, 0.05, 1)   # orange – fast brick
 
 ROW_COLORS: List[LColor] = [
     LColor(1.00, 0.18, 0.18, 1),   # 0 – red
@@ -104,10 +118,11 @@ ROW_COLORS: List[LColor] = [
 
 # ════════════════════════════════════════════════════════════════
 #  SECTION 2 · LEVELS
-#  0 = empty   1-6 = normal brick (row colour index)   9 = hard (2 hits)
+#  0=empty   1-6=normal brick   7=multi-ball   8=slow
+#  9=hard (2 hits)              10=fast
 # ════════════════════════════════════════════════════════════════
 LEVELS: List[List[List[int]]] = [
-    # ── Level 1 · Classic rainbow ──────────────────────────────
+    # ── Level 1 · Classic rainbow (intro – no power bricks) ────
     [
         [1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
         [2, 2, 2, 2, 2, 2, 2, 2, 2, 2],
@@ -116,23 +131,32 @@ LEVELS: List[List[List[int]]] = [
         [5, 5, 5, 5, 5, 5, 5, 5, 5, 5],
         [6, 6, 6, 6, 6, 6, 6, 6, 6, 6],
     ],
-    # ── Level 2 · Diamond + gaps ───────────────────────────────
+    # ── Level 2 · Diamond + first power bricks ─────────────────
     [
-        [0, 0, 0, 1, 1, 1, 1, 0, 0, 0],
-        [0, 0, 2, 2, 2, 2, 2, 2, 0, 0],
-        [0, 3, 3, 3, 3, 3, 3, 3, 3, 0],
-        [4, 4, 4, 0, 0, 0, 0, 4, 4, 4],
-        [5, 5, 5, 5, 0, 0, 5, 5, 5, 5],
-        [6, 0, 6, 0, 6, 6, 0, 6, 0, 6],
+        [0, 0, 0, 1,  1,  1,  1, 0, 0, 0],
+        [0, 0, 2, 2,  7,  2,  2, 2, 0, 0],   # 7=multi-ball
+        [0, 3, 3, 3,  3,  3,  3, 3, 3, 0],
+        [4, 4, 8, 0,  0,  0,  0,10, 4, 4],   # 8=slow, 10=fast
+        [5, 5, 5, 5,  7,  7,  5, 5, 5, 5],   # 7=multi-ball x2
+        [6, 0, 6, 0,  6,  6,  0, 6, 0, 6],
     ],
-    # ── Level 3 · Hard bricks + alternating gaps ───────────────
+    # ── Level 3 · Hard bricks + power bricks ───────────────────
     [
-        [9, 0, 9, 0, 9, 9, 0, 9, 0, 9],
-        [0, 1, 0, 1, 0, 0, 1, 0, 1, 0],
-        [2, 9, 2, 9, 2, 2, 9, 2, 9, 2],
-        [0, 3, 0, 3, 0, 0, 3, 0, 3, 0],
-        [4, 9, 4, 9, 4, 4, 9, 4, 9, 4],
-        [5, 0, 5, 0, 5, 5, 0, 5, 0, 5],
+        [9, 0, 9, 0,  9,  9,  0, 9, 0, 9],
+        [0, 7, 0, 1,  0,  0,  1, 0, 7, 0],   # 7=multi-ball
+        [2, 9, 2, 9,  8,  8,  9, 2, 9, 2],   # 8=slow x2
+        [0, 3, 0, 3,  0,  0,  3, 0, 3, 0],
+        [4, 9,10, 9,  4,  4,  9,10, 9, 4],   # 10=fast x2
+        [5, 0, 5, 0,  5,  5,  0, 5, 0, 5],
+    ],
+    # ── Level 4 · Power brick chaos ────────────────────────────
+    [
+        [9, 7, 9, 7,  9,  9,  7, 9, 7, 9],
+        [8, 1, 8, 1,  8,  8,  1, 8, 1, 8],
+        [2,10, 2,10,  2,  2, 10, 2,10, 2],
+        [9, 3, 9, 7,  9,  9,  7, 9, 3, 9],
+        [7, 4, 8, 4,  7,  7,  4, 8, 4, 7],
+        [5, 9,10, 9,  5,  5,  9,10, 9, 5],
     ],
 ]
 
@@ -141,21 +165,15 @@ LEVELS: List[List[List[int]]] = [
 # ════════════════════════════════════════════════════════════════
 
 def clamp(v: float, lo: float, hi: float) -> float:
-    """Clamp v to [lo, hi]."""
     return max(lo, min(hi, v))
 
 
 def norm2(x: float, y: float):
-    """Return normalised (x, y); returns (0, 1) for a zero vector."""
     m = math.hypot(x, y)
     return (x / m, y / m) if m > 1e-9 else (0.0, 1.0)
 
 
 def fix_vy(vx: float, vy: float, spd: Optional[float] = None):
-    """
-    Ensure |vy| >= MIN_VY while preserving `spd` (current speed if None).
-    Prevents near-horizontal loops that last forever.
-    """
     if spd is None:
         spd = math.hypot(vx, vy)
     if abs(vy) < MIN_VY:
@@ -169,7 +187,6 @@ def fix_vy(vx: float, vy: float, spd: Optional[float] = None):
 
 def make_card(parent: NodePath, name: str, w: float, h: float,
               color: LColor) -> NodePath:
-    """Create a solid-colour rectangle centred at the parent origin."""
     cm = CardMaker(name)
     cm.setFrame(-w / 2, w / 2, -h / 2, h / 2)
     np = parent.attachNewNode(cm.generate())
@@ -181,7 +198,6 @@ def make_card(parent: NodePath, name: str, w: float, h: float,
 
 
 def load_hs() -> int:
-    """Load high score from SAVE_FILE; return 0 if missing/corrupt."""
     try:
         with open(SAVE_FILE) as f:
             return int(json.load(f).get("high_score", 0))
@@ -190,7 +206,6 @@ def load_hs() -> int:
 
 
 def save_hs(score: int) -> None:
-    """Persist high score to SAVE_FILE."""
     try:
         with open(SAVE_FILE, "w") as f:
             json.dump({"high_score": score}, f)
@@ -207,12 +222,11 @@ class Paddle:
 
     def __init__(self, root: NodePath) -> None:
         self.np: NodePath = make_card(root, "paddle", PAD_W, PAD_H, C_PADDLE)
-        self.x: float     = 0.0
-        self.ml: bool     = False   # move-left key held?
-        self.mr: bool     = False   # move-right key held?
+        self.x:  float    = 0.0
+        self.ml: bool     = False
+        self.mr: bool     = False
         self.np.setPos(0, 0, PAD_Y)
 
-    # ── AABB edges ──────────────────────────────────────────────
     @property
     def left(self)   -> float: return self.x - PAD_W / 2
     @property
@@ -234,11 +248,13 @@ class Paddle:
 
 
 class Ball:
-    """The game ball."""
+    """The game ball.  `extra=True` gives it a green tint so players can
+    distinguish original ball from multi-ball clones."""
 
-    def __init__(self, root: NodePath) -> None:
+    def __init__(self, root: NodePath, extra: bool = False) -> None:
         side = BALL_R * 2
-        self.np:        NodePath = make_card(root, "ball", side, side, C_BALL)
+        col  = C_BALL_X if extra else C_BALL
+        self.np:        NodePath = make_card(root, "ball", side, side, col)
         self.x:         float    = 0.0
         self.y:         float    = PAD_Y + PAD_H / 2 + BALL_R + 0.004
         self.vx:        float    = 0.0
@@ -248,18 +264,15 @@ class Ball:
         self.np.setPos(self.x, 0, self.y)
 
     def attach_to(self, px: float) -> None:
-        """Stick ball on top of paddle at horizontal position px."""
         self.x = px
         self.y = PAD_Y + PAD_H / 2 + BALL_R + 0.004
         self.on_paddle = True
         self.np.setPos(self.x, 0, self.y)
 
     def launch(self) -> None:
-        """Detach ball and fire upward at a slight angle."""
         if not self.on_paddle:
             return
         self.on_paddle = False
-        # Small rightward bias; angle from vertical = 18°
         angle_from_vert = math.radians(18)
         self.vx = self.spd * math.sin(angle_from_vert)
         self.vy = self.spd * math.cos(angle_from_vert)
@@ -267,30 +280,39 @@ class Ball:
 
 
 class Brick:
-    """A single brick in the grid."""
+    """A single brick in the grid, including power-brick variants."""
+
+    # (color, hits) for special brick types
+    _SPECIAL: dict = {
+        9:            (None,    2),   # hard – color set below
+        BTYPE_MULTI:  (C_MULTI, 1),
+        BTYPE_SLOW:   (C_SLOW,  1),
+        BTYPE_FAST:   (C_FAST,  1),
+    }
 
     def __init__(self, root: NodePath, col: int, row: int, btype: int) -> None:
-        self.col:    int   = col
-        self.row:    int   = row
-        self.btype:  int   = btype
-        self.hits:   int   = 2 if btype == 9 else 1
-        self.alive:  bool  = True
+        self.col:     int   = col
+        self.row:     int   = row
+        self.btype:   int   = btype
+        self.alive:   bool  = True
         self.flash_t: float = 0.0
 
-        init_color: LColor = (
-            C_HARD if btype == 9
-            else ROW_COLORS[(btype - 1) % len(ROW_COLORS)]
-        )
+        if btype in self._SPECIAL:
+            init_color, self.hits = self._SPECIAL[btype]
+            if btype == 9:
+                init_color = C_HARD
+        else:
+            init_color = ROW_COLORS[(btype - 1) % len(ROW_COLORS)]
+            self.hits  = 1
+
         self.np = make_card(root, f"b{row}_{col}", BRICK_W, BRICK_H, init_color)
 
-        # Compute grid position (centred around x=0)
         total_w = BRICK_COLS * BRICK_W + (BRICK_COLS - 1) * BRICK_PX
         x0 = -total_w / 2 + BRICK_W / 2
         self.cx: float = x0 + col * (BRICK_W + BRICK_PX)
         self.cy: float = BRICK_Y0 - row * (BRICK_H + BRICK_PY)
         self.np.setPos(self.cx, 0, self.cy)
 
-    # ── AABB edges ──────────────────────────────────────────────
     @property
     def left(self)   -> float: return self.cx - BRICK_W / 2
     @property
@@ -301,19 +323,17 @@ class Brick:
     def bottom(self) -> float: return self.cy - BRICK_H / 2
 
     def hit(self) -> int:
-        """
-        Register a hit.  Returns points earned:
-          - Normal brick destroyed → PTS_NORM
-          - Hard brick first hit   → PTS_HARD1 (not destroyed)
-          - Hard brick second hit  → PTS_HARD2 (destroyed)
-        """
         self.hits -= 1
         self.flash_t = 0.15
         if self.hits <= 0:
             self.alive = False
             self.np.hide()
-            return PTS_HARD2 if self.btype == 9 else PTS_NORM
-        # Hard brick survived; change colour to show damage
+            if self.btype == 9:
+                return PTS_HARD2
+            if self.btype in POWER_BTYPES:
+                return PTS_POWER
+            return PTS_NORM
+        # Hard brick survived first hit
         self.np.setColor(C_HARD2)
         return PTS_HARD1
 
@@ -334,23 +354,16 @@ class Brick:
 
 _BTN_FRAME  = (-0.22, 0.22, -0.046, 0.066)
 _BTN_COLOR  = (0.13, 0.23, 0.46, 0.94)
-_BTN_HOVER  = (0.25, 0.42, 0.72, 0.94)
-_BTN_CLICK  = (0.08, 0.14, 0.32, 0.94)
 
 
 def _btn(text: str, pos, cmd, parent=None) -> DirectButton:
-    """Create a styled DirectButton."""
     kw = dict(
-        text=text,
-        pos=pos,
-        text_scale=0.062,
-        frameSize=_BTN_FRAME,
-        frameColor=_BTN_COLOR,
+        text=text, pos=pos, text_scale=0.062,
+        frameSize=_BTN_FRAME, frameColor=_BTN_COLOR,
         text_fg=(1, 1, 1, 1),
         text_shadow=(0, 0, 0, 0.5),
         text_shadowOffset=(0.05, 0.05),
-        rolloverSound=None,
-        clickSound=None,
+        rolloverSound=None, clickSound=None,
         command=cmd,
     )
     if parent is not None:
@@ -360,7 +373,6 @@ def _btn(text: str, pos, cmd, parent=None) -> DirectButton:
 
 def _txt(text: str, pos, scale: float = 0.07,
          fg=(1, 1, 1, 1), **kw) -> OnscreenText:
-    """Create centred OnscreenText."""
     return OnscreenText(
         text=text, pos=pos, scale=scale, fg=fg,
         align=TextNode.ACenter, mayChange=False, **kw
@@ -379,35 +391,45 @@ class BreakoutGame(ShowBase):
       MENU → PLAYING ⟷ PAUSED
                 ↓
            GAME_OVER / VICTORY → MENU
+
+    Multi-ball is supported via self.balls (List[Ball]).
+    Power events are queued in self._power_events and resolved
+    once per visual frame after all sub-step physics complete.
     """
 
     def __init__(self) -> None:
         super().__init__()
 
-        # ── window ──────────────────────────────────────────────
         wp = WindowProperties()
         wp.setSize(WIN_W, WIN_H)
-        wp.setTitle("BREAKOUT")
+        wp.setTitle("BREAKOUT — Power Edition")
         wp.setFixedSize(True)
         self.win.requestProperties(wp)
 
         self.disableMouse()
         self.setBackgroundColor(*C_BG)
 
-        # ── persistent data ─────────────────────────────────────
         self.high_score: int = load_hs()
 
-        # ── state ───────────────────────────────────────────────
         self.state: str = "MENU"
         self.score: int = 0
         self.lives: int = LIVES0
         self.lvl:   int = 0
         self._dbg:  bool = False
 
-        # ── scene root (all game objects attach here) ────────────
+        # ── Power state ─────────────────────────────────────────
+        # power_type: "" | "slow" | "fast"
+        self.power_type:         str   = ""
+        self.power_timer:        float = 0.0
+        # multiplier currently baked into all ball speeds, so we can undo it
+        self.power_applied_mult: float = 1.0
+
+        # Internal queue filled by _collide_bricks, consumed by _update
+        self._power_events: List[Tuple[str, Ball]] = []
+
+        # ── Scene root ───────────────────────────────────────────
         self.gr: NodePath = self.aspect2d.attachNewNode("game_root")
 
-        # Static walls (visual only; bounce logic uses B_* constants)
         wall_h = abs(F_TOP - F_BOTTOM) + 0.2
         wall_w = abs(F_RIGHT - F_LEFT) + 0.2
         wl = make_card(self.gr, "wl", WALL_T * 2, wall_h, C_WALL)
@@ -418,16 +440,16 @@ class BreakoutGame(ShowBase):
         wt.setPos(0, 0, F_TOP - WALL_T)
         self.gr.hide()
 
-        # ── entity handles ───────────────────────────────────────
+        # ── Entity handles ───────────────────────────────────────
         self.paddle: Optional[Paddle] = None
-        self.ball:   Optional[Ball]   = None
+        self.balls:  List[Ball]       = []   # ALL active balls (1…N)
         self.bricks: List[Brick]      = []
 
         # ── UI widget lists ──────────────────────────────────────
-        self._ui:  List = []     # overlay screens
-        self._hud: dict = {}     # in-game HUD texts
+        self._ui:  List = []
+        self._hud: dict = {}
 
-        # ── input bindings ───────────────────────────────────────
+        # ── Input bindings ───────────────────────────────────────
         for key, direction in (("a", "l"), ("arrow_left", "l"),
                                ("d", "r"), ("arrow_right", "r")):
             self.accept(key,          self._key, [direction, True])
@@ -438,7 +460,6 @@ class BreakoutGame(ShowBase):
         self.accept("q",      sys.exit)
         self.accept("f1",     self._toggle_dbg)
 
-        # ── start ────────────────────────────────────────────────
         self._show_menu()
         self.taskMgr.add(self._update, "main_update")
 
@@ -452,8 +473,11 @@ class BreakoutGame(ShowBase):
                 self.paddle.mr = pressed
 
     def _space(self) -> None:
-        if self.state == "PLAYING" and self.ball and self.ball.on_paddle:
-            self.ball.launch()
+        """Launch every ball currently resting on the paddle."""
+        if self.state == "PLAYING":
+            for b in self.balls:
+                if b.on_paddle:
+                    b.launch()
 
     def _esc(self) -> None:
         if   self.state == "PLAYING": self._show_pause()
@@ -465,25 +489,20 @@ class BreakoutGame(ShowBase):
 
     def _toggle_dbg(self) -> None:
         self._dbg = not self._dbg
-        state_str = "ON" if self._dbg else "OFF"
-        print(f"[DEBUG] hitbox logging {state_str}")
+        print(f"[DEBUG] hitbox logging {'ON' if self._dbg else 'OFF'}")
 
     # ── UI helpers ───────────────────────────────────────────────
 
     def _clear_ui(self) -> None:
         for w in self._ui:
-            try:
-                w.destroy()
-            except Exception:
-                pass
+            try: w.destroy()
+            except Exception: pass
         self._ui.clear()
 
     def _clear_hud(self) -> None:
         for w in self._hud.values():
-            try:
-                w.destroy()
-            except Exception:
-                pass
+            try: w.destroy()
+            except Exception: pass
         self._hud.clear()
 
     def _add(self, widget) -> None:
@@ -509,22 +528,22 @@ class BreakoutGame(ShowBase):
     def _show_howto(self) -> None:
         self.state = "HOW_TO_PLAY"
         self._clear_ui()
-
         instructions = (
             "HOW TO PLAY\n\n"
-            "A / Arrow-Left     Move paddle left\n"
-            "D / Arrow-Right    Move paddle right\n"
-            "SPACE              Launch ball\n"
-            "ESC                Pause / Resume\n"
-            "R                  Restart current level\n"
-            "Q                  Quit game\n"
-            "F1                 Toggle debug output\n\n"
+            "A / Arrow-Left    Move paddle left\n"
+            "D / Arrow-Right   Move paddle right\n"
+            "SPACE             Launch ball\n"
+            "ESC               Pause / Resume\n"
+            "R                 Restart current level\n"
+            "Q                 Quit\n\n"
             "Clear every brick to advance!\n"
-            "Grey bricks take 2 hits.\n"
-            "The ball speeds up as you score.\n\n"
-            "Good luck!"
+            "Grey bricks require 2 hits.\n\n"
+            "POWER BRICKS:\n"
+            "  CYAN   = Multi-Ball  (+2 extra balls!)\n"
+            "  PURPLE = Slow Ball   (slows for 8 s)\n"
+            "  ORANGE = Fast Ball   (speeds up for 8 s)\n"
         )
-        self._add(_txt(instructions, (0, 0.29), scale=0.052))
+        self._add(_txt(instructions, (0, 0.28), scale=0.048))
         self._add(_btn("BACK", (0, 0, -0.72), self._show_menu))
 
     def _show_pause(self) -> None:
@@ -532,7 +551,6 @@ class BreakoutGame(ShowBase):
         if self.paddle:
             self.paddle.ml = self.paddle.mr = False
         self._clear_ui()
-
         self._add(_txt("PAUSED", (0, 0.30), scale=0.14, fg=(1, 1, 0.3, 1)))
         self._add(_btn("RESUME",        (0, 0,  0.06), self._resume))
         self._add(_btn("RESTART LEVEL", (0, 0, -0.11), self._load_level))
@@ -598,6 +616,11 @@ class BreakoutGame(ShowBase):
             text=f"LIVES: {self.lives}", pos=(rgt, -0.94),
             scale=s, fg=(1, 0.34, 0.34, 1),
             align=TextNode.ARight, mayChange=True)
+        # Power-effect indicator (center, just above the score bar)
+        self._hud["pw"] = OnscreenText(
+            text="", pos=(0, -0.87),
+            scale=0.062, fg=(1, 1, 1, 1),
+            align=TextNode.ACenter, mayChange=True)
 
     def _tick_hud(self) -> None:
         if not self._hud:
@@ -605,7 +628,21 @@ class BreakoutGame(ShowBase):
         self._hud["sc"].setText(f"SCORE: {self.score}")
         self._hud["hs"].setText(f"HI: {self.high_score}")
         self._hud["lv"].setText(f"LVL {self.lvl + 1}")
-        self._hud["li"].setText(f"LIVES: {self.lives}")
+
+        # Show ball count when multi-ball is active
+        ball_ct = len(self.balls)
+        suffix  = f"  x{ball_ct}" if ball_ct > 1 else ""
+        self._hud["li"].setText(f"LIVES: {self.lives}{suffix}")
+
+        # Power indicator
+        if self.power_type == "slow":
+            self._hud["pw"]["fg"] = (0.78, 0.35, 1.0, 1.0)
+            self._hud["pw"].setText(f"SLOW  {self.power_timer:.1f}s")
+        elif self.power_type == "fast":
+            self._hud["pw"]["fg"] = (1.0, 0.55, 0.10, 1.0)
+            self._hud["pw"].setText(f"FAST  {self.power_timer:.1f}s")
+        else:
+            self._hud["pw"].setText("")
 
     # ── Game-flow methods ────────────────────────────────────────
 
@@ -620,24 +657,32 @@ class BreakoutGame(ShowBase):
         self.state = "PLAYING"
 
     def _load_level(self) -> None:
-        """(Re)build the current level: create paddle, ball, bricks."""
+        """(Re)build the current level."""
         self._clear_ui()
         self.gr.show()
 
-        # destroy previous bricks
+        # Destroy previous bricks
         for b in self.bricks:
             b.np.removeNode()
         self.bricks.clear()
 
-        # destroy previous entities
+        # Destroy previous entities
         if self.paddle:
             self.paddle.np.removeNode()
-        if self.ball:
-            self.ball.np.removeNode()
+        for b in self.balls:
+            b.np.removeNode()
+        self.balls.clear()
+
+        # Reset power state
+        self.power_type         = ""
+        self.power_timer        = 0.0
+        self.power_applied_mult = 1.0
+        self._power_events.clear()
 
         self.paddle = Paddle(self.gr)
-        self.ball   = Ball(self.gr)
-        self.ball.attach_to(0.0)
+        first_ball  = Ball(self.gr, extra=False)
+        first_ball.attach_to(0.0)
+        self.balls.append(first_ball)
 
         layout = LEVELS[self.lvl % len(LEVELS)]
         for ri, row in enumerate(layout):
@@ -663,35 +708,54 @@ class BreakoutGame(ShowBase):
 
         dt = min(globalClock.getDt(), DT_CAP)
 
-        # paddle moves every frame
         self.paddle.update(dt)
 
-        if self.ball.on_paddle:
-            self.ball.attach_to(self.paddle.x)
+        # ── Tick power timer ─────────────────────────────────────
+        if self.power_timer > 0:
+            self.power_timer -= dt
+            if self.power_timer <= 0:
+                self._expire_power()
+
+        # ── Attach on-paddle balls to moving paddle ───────────────
+        for b in self.balls:
+            if b.on_paddle:
+                b.attach_to(self.paddle.x)
+
+        # Nothing to simulate if all balls are waiting on paddle
+        if all(b.on_paddle for b in self.balls):
+            self._tick_hud()
             return Task.cont
 
         # ── Sub-stepped physics ──────────────────────────────────
-        # Dividing dt into SUBSTEPS guarantees the ball never moves
-        # more than spd*DT_CAP/SUBSTEPS ≈ 0.028 units per step,
-        # which is safely less than BRICK_H (0.062).  This prevents
-        # tunnelling without requiring a full broad-phase sweep.
         sub = dt / SUBSTEPS
-        ball_lost = False
-        for _ in range(SUBSTEPS):
-            if not self._physics_step(sub):
-                ball_lost = True
-                break
+        lost_balls: List[Ball] = []
+        self._power_events.clear()
 
-        if ball_lost:
-            self._handle_ball_lost()
+        for b in self.balls:
+            if b.on_paddle:
+                continue
+            for _ in range(SUBSTEPS):
+                if not self._physics_step(b, sub):
+                    lost_balls.append(b)
+                    break
+
+        # ── Resolve power events (before removing lost balls) ────
+        for ptype, src in self._power_events:
+            self._handle_power(ptype, src)
+
+        # ── Remove balls that fell below the field ───────────────
+        for b in lost_balls:
+            self._handle_ball_lost(b)
+
+        if self.state != "PLAYING":
             return Task.cont
 
-        # check level clear (all alive bricks gone)
+        # ── Level clear ──────────────────────────────────────────
         if self.bricks and all(not b.alive for b in self.bricks):
             self._advance_level()
             return Task.cont
 
-        # flash-animation tick for bricks
+        # Tick brick hit-flash animations
         for b in self.bricks:
             if b.alive:
                 b.tick(dt)
@@ -701,129 +765,228 @@ class BreakoutGame(ShowBase):
 
     # ── Physics ──────────────────────────────────────────────────
 
-    def _physics_step(self, dt: float) -> bool:
+    def _physics_step(self, ball: Ball, dt: float) -> bool:
         """
-        Advance ball by dt seconds, resolve walls / paddle / bricks.
-        Returns True if ball is still in play, False if it's lost.
+        Advance `ball` by dt seconds; resolve walls / paddle / bricks.
+        Returns True if ball is still in play, False if it fell below the field.
+        Power events are queued in self._power_events (not returned directly).
         """
-        bl = self.ball
+        bl = ball
         pd = self.paddle
 
         bl.x += bl.vx * dt
         bl.y += bl.vy * dt
 
-        # ── left / right walls ──────────────────────────────────
+        # Left / right walls
         if bl.x - BALL_R < B_LEFT:
-            bl.x  = B_LEFT + BALL_R
-            bl.vx = abs(bl.vx)
+            bl.x  = B_LEFT + BALL_R;  bl.vx = abs(bl.vx)
         elif bl.x + BALL_R > B_RIGHT:
-            bl.x  = B_RIGHT - BALL_R
-            bl.vx = -abs(bl.vx)
+            bl.x  = B_RIGHT - BALL_R; bl.vx = -abs(bl.vx)
 
-        # ── top wall ────────────────────────────────────────────
+        # Top wall
         if bl.y + BALL_R > B_TOP:
-            bl.y  = B_TOP - BALL_R
-            bl.vy = -abs(bl.vy)
+            bl.y  = B_TOP - BALL_R;   bl.vy = -abs(bl.vy)
 
-        # ── ball lost (fell below field) ─────────────────────────
+        # Ball lost
         if bl.y < F_BOTTOM:
             return False
 
-        # ── paddle collision ─────────────────────────────────────
+        # Paddle collision
         if (bl.vy < 0
                 and bl.y - BALL_R <= pd.top
                 and bl.y + BALL_R >= pd.bottom
                 and bl.x + BALL_R >= pd.left - BALL_R
                 and bl.x - BALL_R <= pd.right + BALL_R):
 
-            # rel ∈ [-1, 1]: -1 = far left, 0 = centre, +1 = far right
-            rel = clamp((bl.x - pd.x) / (PAD_W / 2), -1.0, 1.0)
-
-            # Map to outgoing angle (measured from vertical):
-            #   rel = 0   → straight up   (0°)
-            #   rel = ±1  → ±60° from vertical
+            rel   = clamp((bl.x - pd.x) / (PAD_W / 2), -1.0, 1.0)
             angle = math.radians(rel * 60)
-            spd = bl.spd
+            spd   = bl.spd
             bl.vx = spd * math.sin(angle)
-            bl.vy = spd * math.cos(angle)   # always positive → upward
+            bl.vy = spd * math.cos(angle)
             bl.vx, bl.vy = fix_vy(bl.vx, bl.vy, spd)
-            bl.y = pd.top + BALL_R + 0.001  # depenetrate
+            bl.y = pd.top + BALL_R + 0.001
 
             if self._dbg:
                 print(f"[DEBUG] paddle hit rel={rel:.2f}  "
                       f"vx={bl.vx:.3f} vy={bl.vy:.3f}")
 
-        # ── brick collisions ─────────────────────────────────────
-        self._collide_bricks()
-
+        self._collide_bricks(bl)
         bl.np.setPos(bl.x, 0, bl.y)
         return True
 
-    def _collide_bricks(self) -> None:
+    def _collide_bricks(self, ball: Ball) -> None:
         """
-        AABB collision between ball and bricks.
-        Only one brick is resolved per sub-step (break after first hit)
-        to avoid double-counting and velocity-direction chaos.
-        The correct axis is determined by comparing the X and Y penetration
-        depths: the smaller depth indicates the axis of collision.
+        AABB collision between ball and all alive bricks.
+        Resolves the first overlap found (one brick per sub-step).
+        For power bricks that are destroyed, queues an event in
+        self._power_events to be processed after all physics completes.
         """
-        bl = self.ball
-
+        bl = ball
         for brick in self.bricks:
             if not brick.alive:
                 continue
 
-            # Minkowski-sum half-extents
             hx = BRICK_W / 2 + BALL_R
             hy = BRICK_H / 2 + BALL_R
-
-            ox = hx - abs(bl.x - brick.cx)   # x overlap (penetration)
-            oy = hy - abs(bl.y - brick.cy)   # y overlap
+            ox = hx - abs(bl.x - brick.cx)
+            oy = hy - abs(bl.y - brick.cy)
 
             if ox <= 0 or oy <= 0:
-                continue    # no intersection
+                continue
 
-            # ── resolve collision ───────────────────────────────
+            # Axis selection: smaller penetration depth = collision axis
             if ox < oy:
-                # Horizontal penetration is smaller → side hit
                 direction = math.copysign(1.0, bl.x - brick.cx)
                 bl.vx = direction * abs(bl.vx)
                 bl.x += direction * ox
             else:
-                # Vertical penetration is smaller → top/bottom hit
                 direction = math.copysign(1.0, bl.y - brick.cy)
                 bl.vy = direction * abs(bl.vy)
                 bl.y += direction * oy
 
-            # ── score & speed ───────────────────────────────────
             pts = brick.hit()
             self.score += pts
             if self.score > self.high_score:
                 self.high_score = self.score
 
             if not brick.alive:
-                # Accelerate ball on destroy
-                bl.spd = min(bl.spd + BALL_ACCEL, BALL_SPD_MAX)
-                nx, ny = norm2(bl.vx, bl.vy)
-                bl.vx = nx * bl.spd
-                bl.vy = ny * bl.spd
-                bl.vx, bl.vy = fix_vy(bl.vx, bl.vy, bl.spd)
+                # Normal acceleration only for non-power bricks
+                if brick.btype not in POWER_BTYPES:
+                    bl.spd = min(bl.spd + BALL_ACCEL, BALL_SPD_MAX)
+                    nx, ny = norm2(bl.vx, bl.vy)
+                    bl.vx  = nx * bl.spd
+                    bl.vy  = ny * bl.spd
+                    bl.vx, bl.vy = fix_vy(bl.vx, bl.vy, bl.spd)
+
+                # Queue power event
+                if brick.btype == BTYPE_MULTI:
+                    self._power_events.append(("multi", bl))
+                elif brick.btype == BTYPE_SLOW:
+                    self._power_events.append(("slow", bl))
+                elif brick.btype == BTYPE_FAST:
+                    self._power_events.append(("fast", bl))
 
             if self._dbg:
                 print(f"[DEBUG] brick({brick.row},{brick.col}) hit  "
                       f"ox={ox:.4f} oy={oy:.4f}  "
                       f"vx={bl.vx:.3f} vy={bl.vy:.3f}  pts={pts}")
+            break  # one brick per sub-step
 
-            break   # one brick per sub-step
+    # ── Power system ─────────────────────────────────────────────
 
-    def _handle_ball_lost(self) -> None:
+    def _handle_power(self, ptype: str, source: Ball) -> None:
+        """Dispatch a power event to the right handler."""
+        if ptype == "multi":
+            self._spawn_multi_balls(source)
+        elif ptype in ("slow", "fast"):
+            self._apply_power_effect(ptype)
+
+    def _spawn_multi_balls(self, source: Ball) -> None:
+        """
+        Spawn 2 extra balls diverging ±30° from the source ball's
+        current direction.  Capped at MULTI_CAP total balls to prevent
+        unbounded chaos on consecutive multi-ball bricks.
+        """
+        if len(self.balls) >= MULTI_CAP:
+            return
+        cur_angle = math.atan2(source.vx, source.vy)   # angle from vertical
+        for offset_deg in (-30, 30):
+            if len(self.balls) >= MULTI_CAP:
+                break
+            new_angle = cur_angle + math.radians(offset_deg)
+            b = Ball(self.gr, extra=True)
+            b.x  = source.x
+            b.y  = source.y
+            b.on_paddle = False
+            b.spd = source.spd
+            b.vx  = source.spd * math.sin(new_angle)
+            b.vy  = source.spd * math.cos(new_angle)
+            b.vx, b.vy = fix_vy(b.vx, b.vy, b.spd)
+            b.np.setPos(b.x, 0, b.y)
+            self.balls.append(b)
+
+        if self._dbg:
+            print(f"[DEBUG] multi-ball!  total balls = {len(self.balls)}")
+
+    def _apply_power_effect(self, ptype: str) -> None:
+        """
+        Apply slow or fast to all active (non-paddle) balls.
+        Cancels any previously active speed effect first so that
+        the multipliers don't stack.
+        """
+        # Undo existing effect before applying new one
+        self._expire_power(quiet=True)
+
+        mult = SLOW_FACTOR if ptype == "slow" else FAST_FACTOR
+        self.power_type         = ptype
+        self.power_timer        = POWER_DUR
+        self.power_applied_mult = mult
+
+        for b in self.balls:
+            if not b.on_paddle:
+                b.spd = clamp(b.spd * mult,
+                              BALL_SPD0 * 0.30,
+                              BALL_SPD_MAX * 1.50)
+                nx, ny = norm2(b.vx, b.vy)
+                b.vx, b.vy = nx * b.spd, ny * b.spd
+                b.vx, b.vy = fix_vy(b.vx, b.vy, b.spd)
+
+        if self._dbg:
+            print(f"[DEBUG] power '{ptype}'  mult={mult:.2f}  "
+                  f"duration={POWER_DUR}s")
+
+    def _expire_power(self, quiet: bool = False) -> None:
+        """
+        Undo the current speed multiplier and reset power state.
+        `quiet=True` suppresses the debug message (used when replacing
+        one effect with another).
+        """
+        if self.power_type in ("slow", "fast") and self.power_applied_mult != 1.0:
+            inv = 1.0 / self.power_applied_mult
+            for b in self.balls:
+                b.spd = clamp(b.spd * inv, BALL_SPD0 * 0.5, BALL_SPD_MAX)
+                if not b.on_paddle:
+                    nx, ny = norm2(b.vx, b.vy)
+                    b.vx, b.vy = nx * b.spd, ny * b.spd
+                    b.vx, b.vy = fix_vy(b.vx, b.vy, b.spd)
+
+        self.power_type         = ""
+        self.power_timer        = 0.0
+        self.power_applied_mult = 1.0
+        if not quiet and self._dbg:
+            print("[DEBUG] power effect expired")
+
+    def _handle_ball_lost(self, ball: Ball) -> None:
+        """
+        Remove a single lost ball.  A life is only deducted when the
+        LAST active ball falls below the field.  Extra (multi-ball)
+        clones can be lost without penalty as long as at least one ball
+        remains in play.
+        """
+        if ball not in self.balls:
+            return   # already cleaned up (shouldn't happen, just in case)
+
+        ball.np.removeNode()
+        self.balls.remove(ball)
+
+        if self.balls:
+            # Other balls still active — no life lost, keep playing
+            return
+
+        # ── All balls gone ────────────────────────────────────────
+        self._expire_power()
         self.lives -= 1
         self._tick_hud()
+
         if self.lives <= 0:
             self._show_gameover()
-        else:
-            self.ball.spd = BALL_SPD0          # reset speed
-            self.ball.attach_to(self.paddle.x)  # re-attach
+            return
+
+        # Respawn a fresh ball on the paddle
+        new_ball = Ball(self.gr, extra=False)
+        new_ball.spd = BALL_SPD0
+        new_ball.attach_to(self.paddle.x)
+        self.balls.append(new_ball)
 
 
 # ════════════════════════════════════════════════════════════════

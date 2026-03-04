@@ -4,6 +4,7 @@
 ╔══════════════════════════════════════════════════════════════╗
 ║        BREAKOUT — Panda3D · Power Bricks Edition             ║
 ║   Controls: A/D or Arrows · SPACE launch · ESC pause · Q quit║
+║   Music: M to mute/unmute                                    ║
 ╚══════════════════════════════════════════════════════════════╝
 """
 from __future__ import annotations
@@ -18,7 +19,8 @@ from panda3d.core import loadPrcFileData  # noqa: E402
 loadPrcFileData("", "window-title BREAKOUT — Power Edition")
 loadPrcFileData("", "win-size 800 600")
 loadPrcFileData("", "sync-video 0")
-loadPrcFileData("", "audio-library-name null")
+# IMPORTANTE: Habilitar audio (cambiado de "null" a "p3openal_audio")
+loadPrcFileData("", "audio-library-name p3openal_audio")
 
 from direct.gui.DirectGui import DirectButton  # noqa: E402
 from direct.gui.OnscreenText import OnscreenText  # noqa: E402
@@ -30,6 +32,7 @@ from panda3d.core import (  # noqa: E402
     NodePath,
     TextNode,
     WindowProperties,
+    AudioSound,
 )
 
 # ════════════════════════════════════════════════════════════════
@@ -214,7 +217,90 @@ def save_hs(score: int) -> None:
 
 
 # ════════════════════════════════════════════════════════════════
-#  SECTION 4 · ENTITIES
+#  SECTION 4 · SOUND MANAGER (Simple - 3 sounds only)
+# ════════════════════════════════════════════════════════════════
+
+class SimpleSoundManager:
+    """Gestor simple de sonidos - fondo, perder vida y game over."""
+    
+    def __init__(self, base):
+        self.base = base
+        self.sounds = {}
+        self.muted = False
+        self.music_volume = 0.3  # Volumen moderado
+        
+        # Cargar solo los 3 sonidos necesarios
+        
+        self._load_sound("background", "sounds/background.wav", is_music=True)
+        self._load_sound("life_lost", "sounds/life_lost.wav")
+        self._load_sound("game_over", "sounds/game_over.wav")
+        
+        # Iniciar música de fondo
+        self.play_music()
+    
+    def _load_sound(self, name, path, is_music=False):
+        """Carga un archivo de sonido."""
+        try:
+            sound = self.base.loader.loadSfx(path)
+            if is_music:
+                sound.setLoop(True)
+                sound.setVolume(self.music_volume)
+            self.sounds[name] = sound
+            print(f"✅ Sonido cargado: {path}")
+        except Exception as e:
+            print(f"⚠️ No se pudo cargar {path}: {e}")
+            self.sounds[name] = None
+    
+    def play(self, name):
+        """Reproduce un efecto de sonido."""
+        if self.muted:
+            return
+        sound = self.sounds.get(name)
+        if sound:
+            sound.play()
+    
+    def play_music(self):
+        """Inicia la música de fondo."""
+        if self.muted:
+            return
+        music = self.sounds.get("background")
+        if music and music.status() != AudioSound.PLAYING:
+            music.play()
+    
+    def stop_music(self):
+        """Detiene la música."""
+        music = self.sounds.get("background")
+        if music:
+            music.stop()
+    
+    def pause_music(self):
+        """Pausa la música."""
+        music = self.sounds.get("background")
+        if music:
+            music.pause()
+    
+    def resume_music(self):
+        """Reanuda la música."""
+        if self.muted:
+            return
+        music = self.sounds.get("background")
+        if music:
+            music.resume()
+    
+    def toggle_mute(self):
+        """Activa/desactiva el mute con M."""
+        self.muted = not self.muted
+        music = self.sounds.get("background")
+        if music:
+            if self.muted:
+                music.setVolume(0)
+            else:
+                music.setVolume(self.music_volume)
+        return self.muted
+
+
+# ════════════════════════════════════════════════════════════════
+#  SECTION 5 · ENTITIES
 # ════════════════════════════════════════════════════════════════
 
 class Paddle:
@@ -349,7 +435,7 @@ class Brick:
 
 
 # ════════════════════════════════════════════════════════════════
-#  SECTION 5 · UI HELPERS
+#  SECTION 6 · UI HELPERS
 # ════════════════════════════════════════════════════════════════
 
 _BTN_FRAME  = (-0.22, 0.22, -0.046, 0.066)
@@ -380,7 +466,7 @@ def _txt(text: str, pos, scale: float = 0.07,
 
 
 # ════════════════════════════════════════════════════════════════
-#  SECTION 6 · GAME
+#  SECTION 7 · GAME
 # ════════════════════════════════════════════════════════════════
 
 class BreakoutGame(ShowBase):
@@ -418,14 +504,13 @@ class BreakoutGame(ShowBase):
         self._dbg:  bool = False
 
         # ── Power state ─────────────────────────────────────────
-        # power_type: "" | "slow" | "fast"
         self.power_type:         str   = ""
         self.power_timer:        float = 0.0
-        # multiplier currently baked into all ball speeds, so we can undo it
         self.power_applied_mult: float = 1.0
-
-        # Internal queue filled by _collide_bricks, consumed by _update
         self._power_events: List[Tuple[str, Ball]] = []
+
+        # ── Sound Manager ───────────────────────────────────────
+        self.sound_mgr = SimpleSoundManager(self)
 
         # ── Scene root ───────────────────────────────────────────
         self.gr: NodePath = self.aspect2d.attachNewNode("game_root")
@@ -442,7 +527,7 @@ class BreakoutGame(ShowBase):
 
         # ── Entity handles ───────────────────────────────────────
         self.paddle: Optional[Paddle] = None
-        self.balls:  List[Ball]       = []   # ALL active balls (1…N)
+        self.balls:  List[Ball]       = []
         self.bricks: List[Brick]      = []
 
         # ── UI widget lists ──────────────────────────────────────
@@ -458,6 +543,8 @@ class BreakoutGame(ShowBase):
         self.accept("escape", self._esc)
         self.accept("r",      self._restart_key)
         self.accept("q",      sys.exit)
+        self.accept("m",      self._toggle_mute)
+        self.accept("M",      self._toggle_mute)
         self.accept("f1",     self._toggle_dbg)
 
         self._show_menu()
@@ -487,6 +574,10 @@ class BreakoutGame(ShowBase):
         if self.state in ("PLAYING", "PAUSED"):
             self._load_level()
 
+    def _toggle_mute(self) -> None:
+        muted = self.sound_mgr.toggle_mute()
+        print(f"[AUDIO] {'Mute activado' if muted else 'Mute desactivado'}")
+
     def _toggle_dbg(self) -> None:
         self._dbg = not self._dbg
         print(f"[DEBUG] hitbox logging {'ON' if self._dbg else 'OFF'}")
@@ -515,6 +606,7 @@ class BreakoutGame(ShowBase):
         self.gr.hide()
         self._clear_ui()
         self._clear_hud()
+        self.sound_mgr.play_music()
 
         self._add(_txt("BREAKOUT", (0, 0.52), scale=0.19,
                        fg=(1.0, 0.88, 0.16, 1),
@@ -535,6 +627,7 @@ class BreakoutGame(ShowBase):
             "SPACE             Launch ball\n"
             "ESC               Pause / Resume\n"
             "R                 Restart current level\n"
+            "M                 Mute / Unmute music\n"
             "Q                 Quit\n\n"
             "Clear every brick to advance!\n"
             "Grey bricks require 2 hits.\n\n"
@@ -550,6 +643,7 @@ class BreakoutGame(ShowBase):
         self.state = "PAUSED"
         if self.paddle:
             self.paddle.ml = self.paddle.mr = False
+        self.sound_mgr.pause_music()
         self._clear_ui()
         self._add(_txt("PAUSED", (0, 0.30), scale=0.14, fg=(1, 1, 0.3, 1)))
         self._add(_btn("RESUME",        (0, 0,  0.06), self._resume))
@@ -616,11 +710,14 @@ class BreakoutGame(ShowBase):
             text=f"LIVES: {self.lives}", pos=(rgt, -0.94),
             scale=s, fg=(1, 0.34, 0.34, 1),
             align=TextNode.ARight, mayChange=True)
-        # Power-effect indicator (center, just above the score bar)
         self._hud["pw"] = OnscreenText(
             text="", pos=(0, -0.87),
             scale=0.062, fg=(1, 1, 1, 1),
             align=TextNode.ACenter, mayChange=True)
+        self._hud["mute"] = OnscreenText(
+            text="", pos=(rgt - 0.05, 0.92),
+            scale=0.05, fg=(0.8, 0.8, 0.8, 0.7),
+            align=TextNode.ARight, mayChange=True)
 
     def _tick_hud(self) -> None:
         if not self._hud:
@@ -629,12 +726,10 @@ class BreakoutGame(ShowBase):
         self._hud["hs"].setText(f"HI: {self.high_score}")
         self._hud["lv"].setText(f"LVL {self.lvl + 1}")
 
-        # Show ball count when multi-ball is active
         ball_ct = len(self.balls)
         suffix  = f"  x{ball_ct}" if ball_ct > 1 else ""
         self._hud["li"].setText(f"LIVES: {self.lives}{suffix}")
 
-        # Power indicator
         if self.power_type == "slow":
             self._hud["pw"]["fg"] = (0.78, 0.35, 1.0, 1.0)
             self._hud["pw"].setText(f"SLOW  {self.power_timer:.1f}s")
@@ -643,6 +738,11 @@ class BreakoutGame(ShowBase):
             self._hud["pw"].setText(f"FAST  {self.power_timer:.1f}s")
         else:
             self._hud["pw"].setText("")
+        
+        if self.sound_mgr.muted:
+            self._hud["mute"].setText("🔇 MUTE")
+        else:
+            self._hud["mute"].setText("")
 
     # ── Game-flow methods ────────────────────────────────────────
 
@@ -655,6 +755,7 @@ class BreakoutGame(ShowBase):
     def _resume(self) -> None:
         self._clear_ui()
         self.state = "PLAYING"
+        self.sound_mgr.resume_music()
 
     def _load_level(self) -> None:
         """(Re)build the current level."""
@@ -696,6 +797,7 @@ class BreakoutGame(ShowBase):
     def _advance_level(self) -> None:
         self.lvl += 1
         if self.lvl >= len(LEVELS):
+            self.sound_mgr.stop_music()
             self._show_victory()
         else:
             self._load_level()
@@ -739,7 +841,7 @@ class BreakoutGame(ShowBase):
                     lost_balls.append(b)
                     break
 
-        # ── Resolve power events (before removing lost balls) ────
+        # ── Resolve power events ─────────────────────────────────
         for ptype, src in self._power_events:
             self._handle_power(ptype, src)
 
@@ -769,7 +871,6 @@ class BreakoutGame(ShowBase):
         """
         Advance `ball` by dt seconds; resolve walls / paddle / bricks.
         Returns True if ball is still in play, False if it fell below the field.
-        Power events are queued in self._power_events (not returned directly).
         """
         bl = ball
         pd = self.paddle
@@ -818,8 +919,6 @@ class BreakoutGame(ShowBase):
         """
         AABB collision between ball and all alive bricks.
         Resolves the first overlap found (one brick per sub-step).
-        For power bricks that are destroyed, queues an event in
-        self._power_events to be processed after all physics completes.
         """
         bl = ball
         for brick in self.bricks:
@@ -884,12 +983,11 @@ class BreakoutGame(ShowBase):
     def _spawn_multi_balls(self, source: Ball) -> None:
         """
         Spawn 2 extra balls diverging ±30° from the source ball's
-        current direction.  Capped at MULTI_CAP total balls to prevent
-        unbounded chaos on consecutive multi-ball bricks.
+        current direction.  Capped at MULTI_CAP total balls.
         """
         if len(self.balls) >= MULTI_CAP:
             return
-        cur_angle = math.atan2(source.vx, source.vy)   # angle from vertical
+        cur_angle = math.atan2(source.vx, source.vy)
         for offset_deg in (-30, 30):
             if len(self.balls) >= MULTI_CAP:
                 break
@@ -911,10 +1009,7 @@ class BreakoutGame(ShowBase):
     def _apply_power_effect(self, ptype: str) -> None:
         """
         Apply slow or fast to all active (non-paddle) balls.
-        Cancels any previously active speed effect first so that
-        the multipliers don't stack.
         """
-        # Undo existing effect before applying new one
         self._expire_power(quiet=True)
 
         mult = SLOW_FACTOR if ptype == "slow" else FAST_FACTOR
@@ -938,8 +1033,6 @@ class BreakoutGame(ShowBase):
     def _expire_power(self, quiet: bool = False) -> None:
         """
         Undo the current speed multiplier and reset power state.
-        `quiet=True` suppresses the debug message (used when replacing
-        one effect with another).
         """
         if self.power_type in ("slow", "fast") and self.power_applied_mult != 1.0:
             inv = 1.0 / self.power_applied_mult
@@ -959,12 +1052,10 @@ class BreakoutGame(ShowBase):
     def _handle_ball_lost(self, ball: Ball) -> None:
         """
         Remove a single lost ball.  A life is only deducted when the
-        LAST active ball falls below the field.  Extra (multi-ball)
-        clones can be lost without penalty as long as at least one ball
-        remains in play.
+        LAST active ball falls below the field.
         """
         if ball not in self.balls:
-            return   # already cleaned up (shouldn't happen, just in case)
+            return
 
         ball.np.removeNode()
         self.balls.remove(ball)
@@ -976,9 +1067,16 @@ class BreakoutGame(ShowBase):
         # ── All balls gone ────────────────────────────────────────
         self._expire_power()
         self.lives -= 1
+        
+        # Sonido al perder vida (excepto si ya no quedan vidas)
+        if self.lives > 0:
+            self.sound_mgr.play("life_lost")
+        
         self._tick_hud()
 
         if self.lives <= 0:
+            self.sound_mgr.play("game_over")
+            self.sound_mgr.stop_music()
             self._show_gameover()
             return
 
@@ -990,7 +1088,7 @@ class BreakoutGame(ShowBase):
 
 
 # ════════════════════════════════════════════════════════════════
-#  SECTION 7 · ENTRY POINT
+#  SECTION 8 · ENTRY POINT
 # ════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
     game = BreakoutGame()
